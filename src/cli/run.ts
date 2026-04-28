@@ -1,53 +1,73 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { parsePipelineConfig } from '../config/schema';
-import { runPipeline } from '../runner/pipeline';
+import { runOnce } from '../runner/executor';
+import { buildRetryOptions } from '../runner/retry';
+import { evaluateCondition } from '../runner/pipeline';
+import { createLogger } from '../runner/logger';
 
 export interface RunOptions {
-  configPath?: string;
-  env?: Record<string, string>;
+  config: string;
   verbose?: boolean;
+  logFile?: string;
 }
 
-export async function runCli(options: RunOptions = {}): Promise<void> {
-  const configPath = options.configPath ?? path.resolve(process.cwd(), 'taskpipe.json');
+export async function runPipeline(options: RunOptions): Promise<void> {
+  const logger = createLogger({ verbose: options.verbose, logFile: options.logFile });
 
+  const configPath = path.resolve(options.config);
   if (!fs.existsSync(configPath)) {
-    console.error(`Config file not found: ${configPath}`);
+    logger.error(`Config file not found: ${configPath}`);
     process.exit(1);
   }
 
-  let rawConfig: unknown;
-  try {
-    const content = fs.readFileSync(configPath, 'utf-8');
-    rawConfig = JSON.parse(content);
-  } catch {
-    console.error('Failed to parse config file as JSON.');
-    process.exit(1);
-  }
+  const raw = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+  const pipeline = parsePipelineConfig(raw);
 
-  const config = parsePipelineConfig(rawConfig);
-  const env = { ...process.env, ...(options.env ?? {}) } as Record<string, string>;
+  logger.info(`Starting pipeline: ${pipeline.name}`);
 
-  if (options.verbose) {
-    console.log(`Running pipeline with ${config.steps.length} step(s)...`);
-  }
+  const context: Record<string, number> = {};
 
-  const result = await runPipeline(config, env);
+  for (const step of pipeline.steps) {
+    if (step.condition) {
+      const shouldRun = evaluateCondition(step.condition, context);
+      if (!shouldRun) {
+        logger.info(`Skipping step (condition not met)`, step.name);
+        continue;
+      }
+    }
 
-  for (const step of result.steps) {
-    if (step.skipped) {
-      console.log(`[SKIP] ${step.stepName}`);
-    } else {
-      const status = step.exitCode === 0 ? 'OK' : 'FAIL';
-      const retryNote = step.attempts > 1 ? ` (${step.attempts} attempts)` : '';
-      console.log(`[${status}] ${step.stepName}${retryNote}`);
-      if (options.verbose && step.stdout) console.log(step.stdout.trim());
-      if (step.stderr) console.error(step.stderr.trim());
+    logger.info(`Running: ${step.command}`, step.name);
+    const retryOptions = buildRetryOptions(step.retry);
+
+    let attempt = 0;
+    let success = false;
+
+    while (attempt <= retryOptions.maxAttempts) {
+      if (attempt > 0) {
+        logger.warn(`Retrying (attempt ${attempt}/${retryOptions.maxAttempts})`, step.name);
+      }
+      const result = await runOnce(step.command);
+      context[step.name] = result.exitCode;
+
+      if (result.exitCode === 0) {
+        logger.info(`Completed successfully`, step.name);
+        success = true;
+        break;
+      }
+
+      logger.debug(`Exit code: ${result.exitCode}`, step.name);
+      attempt++;
+    }
+
+    if (!success) {
+      logger.error(`Step failed after ${retryOptions.maxAttempts} retries`, step.name);
+      if (!step.continueOnError) {
+        logger.error('Pipeline aborted.');
+        process.exit(1);
+      }
     }
   }
 
-  if (!result.success) {
-    process.exit(1);
-  }
+  logger.info(`Pipeline "${pipeline.name}" completed.`);
 }
