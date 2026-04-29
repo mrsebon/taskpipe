@@ -48,6 +48,16 @@ taskpipe run --task build
 | `--verbose` | Show detailed output |
 | `--config <path>` | Path to config file (default: `taskpipe.yml`) |
 
+### Task Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | string | Unique identifier for the task |
+| `run` | string | Shell command to execute |
+| `retry` | number | Number of times to retry on failure |
+| `on_failure` | `stop` \| `continue` | Behaviour when the task fails (default: `stop`) |
+| `depends_on` | string | Name of a task that must succeed first |
+
 ## Requirements
 
 - Node.js 16+
