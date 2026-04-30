@@ -29,9 +29,30 @@ export function parsePipelineConfig(raw: unknown): Pipeline {
   const result = PipelineSchema.safeParse(raw);
   if (!result.success) {
     const issues = result.error.issues
-      .map((i) => `  - ${i.path.join('.')}: ${i.message}`)
+      .map((i) => {
+        const path = i.path.length > 0 ? i.path.join('.') : '<root>';
+        return `  - ${path}: ${i.message}`;
+      })
       .join('\n');
     throw new Error(`Invalid pipeline configuration:\n${issues}`);
   }
   return result.data;
+}
+
+/**
+ * Validates a pipeline config without throwing, returning either the parsed
+ * pipeline or a list of human-readable error strings.
+ */
+export function validatePipelineConfig(
+  raw: unknown,
+): { success: true; data: Pipeline } | { success: false; errors: string[] } {
+  const result = PipelineSchema.safeParse(raw);
+  if (!result.success) {
+    const errors = result.error.issues.map((i) => {
+      const path = i.path.length > 0 ? i.path.join('.') : '<root>';
+      return `${path}: ${i.message}`;
+    });
+    return { success: false, errors };
+  }
+  return { success: true, data: result.data };
 }
