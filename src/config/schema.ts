@@ -1,58 +1,50 @@
 import { z } from 'zod';
 
-export const RetrySchema = z.object({
-  attempts: z.number().int().min(1).max(10).default(1),
-  delay: z.number().int().min(0).default(1000),
+const RetrySchema = z.object({
+  attempts: z.number().int().min(1).default(1),
+  delay: z.number().min(0).default(0),
+  backoff: z.enum(['fixed', 'exponential']).default('fixed'),
 });
 
-export const StepSchema = z.object({
+const StepSchema = z.object({
   name: z.string().min(1),
   command: z.string().min(1),
   condition: z.string().optional(),
-  retry: RetrySchema.optional(),
   continueOnError: z.boolean().default(false),
+  timeout: z.string().optional(),
+  retry: RetrySchema.optional(),
   env: z.record(z.string()).optional(),
 });
 
-export const PipelineSchema = z.object({
-  version: z.literal('1').default('1'),
+const PipelineSchema = z.object({
   name: z.string().min(1),
-  steps: z.array(StepSchema).min(1),
   env: z.record(z.string()).optional(),
+  envFile: z.string().optional(),
+  inheritEnv: z.boolean().default(true),
+  steps: z.array(StepSchema).min(1),
 });
 
-export type Retry = z.infer<typeof RetrySchema>;
-export type Step = z.infer<typeof StepSchema>;
-export type Pipeline = z.infer<typeof PipelineSchema>;
+export type RetryConfig = z.infer<typeof RetrySchema>;
+export type StepConfig = z.infer<typeof StepSchema>;
+export type PipelineConfig = z.infer<typeof PipelineSchema>;
 
-export function parsePipelineConfig(raw: unknown): Pipeline {
-  const result = PipelineSchema.safeParse(raw);
-  if (!result.success) {
-    const issues = result.error.issues
-      .map((i) => {
-        const path = i.path.length > 0 ? i.path.join('.') : '<root>';
-        return `  - ${path}: ${i.message}`;
-      })
-      .join('\n');
-    throw new Error(`Invalid pipeline configuration:\n${issues}`);
-  }
-  return result.data;
+/**
+ * Parses and validates raw pipeline config, returning typed config or throwing.
+ */
+export function parsePipelineConfig(raw: unknown): PipelineConfig {
+  return PipelineSchema.parse(raw);
 }
 
 /**
- * Validates a pipeline config without throwing, returning either the parsed
- * pipeline or a list of human-readable error strings.
+ * Safe validation — returns success/error without throwing.
  */
 export function validatePipelineConfig(
-  raw: unknown,
-): { success: true; data: Pipeline } | { success: false; errors: string[] } {
+  raw: unknown
+): { success: true; data: PipelineConfig } | { success: false; error: string } {
   const result = PipelineSchema.safeParse(raw);
-  if (!result.success) {
-    const errors = result.error.issues.map((i) => {
-      const path = i.path.length > 0 ? i.path.join('.') : '<root>';
-      return `${path}: ${i.message}`;
-    });
-    return { success: false, errors };
+  if (result.success) {
+    return { success: true, data: result.data };
   }
-  return { success: true, data: result.data };
+  const messages = result.error.errors.map((e) => `${e.path.join('.')}: ${e.message}`);
+  return { success: false, error: messages.join('; ') };
 }
