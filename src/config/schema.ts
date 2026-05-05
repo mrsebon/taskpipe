@@ -1,49 +1,57 @@
-import { z } from 'zod';
+import { z } from "zod";
 
-const HookSchema = z.object({
-  command: z.string().min(1),
-  phase: z.enum(['before', 'after', 'onError']),
-  continueOnError: z.boolean().optional().default(false),
+const RetrySchema = z.object({
+  attempts: z.number().int().min(1).default(1),
+  delayMs: z.number().int().min(0).default(0),
+  backoff: z.enum(["fixed", "exponential"]).default("fixed"),
 });
 
 const StepSchema = z.object({
   name: z.string().min(1),
   command: z.string().min(1),
-  retries: z.number().int().min(0).optional().default(0),
-  timeout: z.string().optional(),
-  condition: z.string().optional(),
   env: z.record(z.string()).optional(),
-  continueOnError: z.boolean().optional().default(false),
-  hooks: z.array(HookSchema).optional().default([]),
+  condition: z.string().optional(),
+  continueOnError: z.boolean().default(false),
+  timeout: z.string().optional(),
+  retry: RetrySchema.optional(),
+  cache: z
+    .object({ key: z.string(), ttl: z.string().optional() })
+    .optional(),
+  concurrentGroup: z.string().optional(),
+});
+
+const ConcurrencySchema = z.object({
+  maxConcurrent: z.number().int().min(1).default(4),
+  failFast: z.boolean().default(false),
 });
 
 const PipelineSchema = z.object({
   name: z.string().min(1),
-  version: z.string().optional().default('1'),
   env: z.record(z.string()).optional(),
-  hooks: z.array(HookSchema).optional().default([]),
+  dotenv: z.string().optional(),
   steps: z.array(StepSchema).min(1),
+  concurrency: ConcurrencySchema.optional(),
+  hooks: z
+    .object({
+      before: z.string().optional(),
+      after: z.string().optional(),
+      onFailure: z.string().optional(),
+    })
+    .optional(),
 });
 
-export type Hook = z.infer<typeof HookSchema>;
-export type Step = z.infer<typeof StepSchema>;
 export type PipelineConfig = z.infer<typeof PipelineSchema>;
+export type StepConfig = z.infer<typeof StepSchema>;
+export type ConcurrencyConfig = z.infer<typeof ConcurrencySchema>;
 
 export function parsePipelineConfig(raw: unknown): PipelineConfig {
   return PipelineSchema.parse(raw);
 }
 
-export function validatePipelineConfig(raw: unknown): {
-  success: boolean;
-  errors: string[];
-  data?: PipelineConfig;
-} {
+export function validatePipelineConfig(
+  raw: unknown
+): { success: true; data: PipelineConfig } | { success: false; error: string } {
   const result = PipelineSchema.safeParse(raw);
-  if (result.success) {
-    return { success: true, errors: [], data: result.data };
-  }
-  const errors = result.error.issues.map(
-    (issue) => `${issue.path.join('.')}: ${issue.message}`
-  );
-  return { success: false, errors };
+  if (result.success) return { success: true, data: result.data };
+  return { success: false, error: result.error.message };
 }
