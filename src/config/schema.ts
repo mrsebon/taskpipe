@@ -1,50 +1,49 @@
 import { z } from 'zod';
 
-const RetrySchema = z.object({
-  attempts: z.number().int().min(1).default(1),
-  delay: z.number().min(0).default(0),
-  backoff: z.enum(['fixed', 'exponential']).default('fixed'),
+const HookSchema = z.object({
+  command: z.string().min(1),
+  phase: z.enum(['before', 'after', 'onError']),
+  continueOnError: z.boolean().optional().default(false),
 });
 
 const StepSchema = z.object({
   name: z.string().min(1),
   command: z.string().min(1),
-  condition: z.string().optional(),
-  continueOnError: z.boolean().default(false),
+  retries: z.number().int().min(0).optional().default(0),
   timeout: z.string().optional(),
-  retry: RetrySchema.optional(),
+  condition: z.string().optional(),
   env: z.record(z.string()).optional(),
+  continueOnError: z.boolean().optional().default(false),
+  hooks: z.array(HookSchema).optional().default([]),
 });
 
 const PipelineSchema = z.object({
   name: z.string().min(1),
+  version: z.string().optional().default('1'),
   env: z.record(z.string()).optional(),
-  envFile: z.string().optional(),
-  inheritEnv: z.boolean().default(true),
+  hooks: z.array(HookSchema).optional().default([]),
   steps: z.array(StepSchema).min(1),
 });
 
-export type RetryConfig = z.infer<typeof RetrySchema>;
-export type StepConfig = z.infer<typeof StepSchema>;
+export type Hook = z.infer<typeof HookSchema>;
+export type Step = z.infer<typeof StepSchema>;
 export type PipelineConfig = z.infer<typeof PipelineSchema>;
 
-/**
- * Parses and validates raw pipeline config, returning typed config or throwing.
- */
 export function parsePipelineConfig(raw: unknown): PipelineConfig {
   return PipelineSchema.parse(raw);
 }
 
-/**
- * Safe validation — returns success/error without throwing.
- */
-export function validatePipelineConfig(
-  raw: unknown
-): { success: true; data: PipelineConfig } | { success: false; error: string } {
+export function validatePipelineConfig(raw: unknown): {
+  success: boolean;
+  errors: string[];
+  data?: PipelineConfig;
+} {
   const result = PipelineSchema.safeParse(raw);
   if (result.success) {
-    return { success: true, data: result.data };
+    return { success: true, errors: [], data: result.data };
   }
-  const messages = result.error.errors.map((e) => `${e.path.join('.')}: ${e.message}`);
-  return { success: false, error: messages.join('; ') };
+  const errors = result.error.issues.map(
+    (issue) => `${issue.path.join('.')}: ${issue.message}`
+  );
+  return { success: false, errors };
 }

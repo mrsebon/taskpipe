@@ -1,78 +1,58 @@
-import { runOnce } from './executor';
-import { withRetry } from './retry';
-import type { PipelineConfig, StepConfig } from '../config/schema';
+import { Logger } from 'winston';
+import { PipelineConfig, Step } from '../config/schema';
+import { runHooks, HookDefinition } from './hooks';
+import { buildEnvContext, interpolateEnv } from './env';
 
-export interface StepResult {
-  stepName: string;
-  exitCode: number;
-  stdout: string;
-  stderr: string;
-  attempts: number;
-  skipped: boolean;
-}
-
-export interface PipelineResult {
-  success: boolean;
-  steps: StepResult[];
-}
-
-export async function runPipeline(
-  config: PipelineConfig,
-  env: Record<string, string> = {}
-): Promise<PipelineResult> {
-  const results: StepResult[] = [];
-  let previousExitCode = 0;
-
-  for (const step of config.steps) {
-    const shouldSkip = evaluateCondition(step, previousExitCode);
-
-    if (shouldSkip) {
-      results.push({
-        stepName: step.name,
-        exitCode: 0,
-        stdout: '',
-        stderr: '',
-        attempts: 0,
-        skipped: true,
-      });
-      continue;
-    }
-
-    const maxAttempts = step.retry?.attempts ?? 1;
-    const delayMs = step.retry?.delayMs ?? 1000;
-
-    let stepResult: StepResult;
-
-    try {
-      const retryResult = await withRetry(
-        () => runOnce(step.command, { env }),
-        { maxAttempts, delayMs }
-      );
-
-      stepResult = {
-        stepName: step.name,
-        ...retryResult.value,
-        attempts: retryResult.attempts,
-        skipped: false,
-      };
-    } catch (err) {
-      return { success: false, steps: results };
-    }
-
-    results.push(stepResult);
-    previousExitCode = stepResult.exitCode;
-
-    if (stepResult.exitCode !== 0 && !step.continueOnError) {
-      return { success: false, steps: results };
-    }
+export function evaluateCondition(
+  condition: string,
+  env: Record<string, string>
+): boolean {
+  const interpolated = interpolateEnv(condition, env);
+  try {
+    // eslint-disable-next-line no-new-func
+    return Boolean(new Function('env', `with(env) { return !!(${interpolated}); }`)(env));
+  } catch {
+    return false;
   }
-
-  return { success: true, steps: results };
 }
 
-function evaluateCondition(step: StepConfig, previousExitCode: number): boolean {
+export interface StepRunContext {
+  config: PipelineConfig;
+  step: Step;
+  env: Record<string, string>;
+  logger: Logger;
+}
+
+export async function runPipelineHooks(
+  hooks: HookDefinition[],
+  phase: 'before' | 'after' | 'onError',
+  env: Record<string, string>,
+  logger: Logger
+): Promise<void> {
+  await runHooks(hooks, phase, env, logger);
+}
+
+export function mergeStepEnv(
+  pipelineEnv: Record<string, string> | undefined,
+  stepEnv: Record<string, string> | undefined,
+  processEnv: Record<string, string>
+): Record<string, string> {
+  return buildEnvContext({
+    ...processEnv,
+    ...(pipelineEnv ?? {}),
+    ...(stepEnv ?? {}),
+  });
+}
+
+export function shouldSkipStep(
+  step: Step,
+  env: Record<string, string>,
+  logger: Logger
+): boolean {
   if (!step.condition) return false;
-  if (step.condition === 'on_success') return previousExitCode !== 0;
-  if (step.condition === 'on_failure') return previousExitCode === 0;
-  return false;
+  const result = evaluateCondition(step.condition, env);
+  if (!result) {
+    logger.info(`Skipping step '${step.name}' — condition not met: ${step.condition}`);
+  }
+  return !result;
 }
