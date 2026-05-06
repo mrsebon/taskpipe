@@ -59,6 +59,30 @@ export function clearCacheDir(cacheDir: string = DEFAULT_CACHE_DIR): number {
   return files.length;
 }
 
+/**
+ * Removes all expired cache entries from the cache directory.
+ * Returns the number of entries that were evicted.
+ */
+export function evictExpiredEntries(cacheDir: string = DEFAULT_CACHE_DIR): number {
+  if (!fs.existsSync(cacheDir)) return 0;
+  const files = fs.readdirSync(cacheDir).filter((f) => f.endsWith('.json'));
+  let evicted = 0;
+  for (const file of files) {
+    const filePath = path.join(cacheDir, file);
+    try {
+      const raw = fs.readFileSync(filePath, 'utf-8');
+      const entry: CacheEntry = JSON.parse(raw);
+      if (Date.now() - entry.createdAt > entry.ttlMs) {
+        fs.unlinkSync(filePath);
+        evicted++;
+      }
+    } catch {
+      // Skip unreadable or malformed entries
+    }
+  }
+  return evicted;
+}
+
 export function parseCacheTtl(raw: string | number | undefined): number {
   if (raw === undefined) return DEFAULT_TTL_MS;
   if (typeof raw === 'number') return raw;
